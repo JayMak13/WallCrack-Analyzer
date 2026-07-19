@@ -1,0 +1,58 @@
+
+# ============================================================
+# Manual Upload Instructions
+# Repository: https://github.com/JayMak13/WallCrack-Analyzer
+# ============================================================
+
+## Option A: Using Git Command Line (Recommended)
+
+1. Open terminal/command prompt
+
+2. Clone your repo:
+   git clone https://github.com/JayMak13/WallCrack-Analyzer.git
+   cd WallCrack-Analyzer
+
+3. Copy the 3 files into this folder:
+   - app.py
+   - requirements.txt  
+   - README.md
+
+4. Add, commit, and push:
+   git add .
+   git commit -m "Add Wall Crack Analyzer with real structural engineering data"
+   git push origin main
+
+## Option B: Using GitHub Web Interface (No Git Required)
+
+1. Go to https://github.com/JayMak13/WallCrack-Analyzer
+
+2. Click the "Add file" button → "Upload files"
+
+3. Drag and drop these 3 files:
+   - app.py
+   - requirements.txt
+   - README.md
+
+4. Add commit message:
+   "Add Wall Crack Analyzer app"
+
+5. Click "Commit changes"
+
+## Option C: Using GitHub Desktop
+
+1. Open GitHub Desktop
+2. Clone JayMak13/WallCrack-Analyzer
+3. Copy the 3 files into the local folder
+4. Commit with message and push
+
+## After Upload - Deploy to Streamlit Cloud
+
+1. Go to https://share.streamlit.io
+2. Sign in with your GitHub account
+3. Click "New app"
+4. Select: JayMak13 / WallCrack-Analyzer
+5. Main file path: app.py
+6. Click "Deploy"
+
+Your app will be live at:
+https://jaymak13-wallcrack-analyzer.streamlit.app
