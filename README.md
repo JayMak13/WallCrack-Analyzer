@@ -65,6 +65,27 @@ streamlit run app.py
 python wall_crack_analyzer.py --interactive
 ```
 
+## Local image-learning model
+
+The application can use a locally trained MobileNetV3 image classifier for the
+six labelled crack categories. It does not use a paid API or an LLM.
+
+```bash
+# Train from Sample_Images and write models/crack_classifier.pt
+python train_model.py
+
+# Later, include high-confidence collected upload candidates in a new run
+python train_model.py --include-candidates
+```
+
+The folder names in `Sample_Images` are the initial labels. During normal use,
+the app automatically saves only very high-confidence model predictions to
+`data/candidate_uploads`; users are not asked to confirm results. Candidates
+are held for a later batch training run and are never added to the active model
+immediately. A model is used by the app only after it reaches the built-in
+held-out validation threshold; otherwise the existing geometric analyser stays
+active as the safe fallback.
+
 ## Data Sources
 
 All crack identification data and repair recommendations are based on real structural engineering sources:

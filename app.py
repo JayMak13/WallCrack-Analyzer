@@ -3,10 +3,13 @@ import os
 import sys
 import math
 import json
+import tempfile
 from datetime import datetime
 from dataclasses import dataclass, asdict
 from typing import List, Dict
 from enum import Enum
+
+from crack_ml import predict_image, save_high_confidence_candidate
 
 # Try to import PIL
 try:
@@ -983,14 +986,25 @@ with col1:
 # Analysis
 if uploaded_file is not None and analyze_btn:
     with st.spinner("Analyzing crack image... This may take a few seconds."):
-        # Save uploaded file
+        # Save uploaded file to an OS-safe temporary location.
         img = Image.open(uploaded_file)
-        temp_path = "/tmp/crack_upload.png"
-        img.save(temp_path)
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
+            temp_path = temp_file.name
+        img.convert("RGB").save(temp_path, "PNG")
 
         # Run analysis
         analyzer = ImageAnalyzer()
         result = analyzer.analyze_image(temp_path)
+
+        # The trained local image model is preferred whenever it is available.
+        # Geometric features remain useful for display and for the safe fallback.
+        ml_classification = predict_image(temp_path)
+        # A young model with low confidence must not displace the established
+        # geometric analyser.  It becomes primary only when it is decisive.
+        if (ml_classification and ml_classification["primary_confidence"] >= 0.60
+                and result.get("success", False)):
+            ml_classification["estimated_width_mm"] = result["classification"].get("estimated_width_mm", 0)
+            result["classification"] = ml_classification
 
         if not result.get("success", False):
             st.error(f"Analysis failed: {result.get('error', 'Unknown error')}")
@@ -999,6 +1013,13 @@ if uploaded_file is not None and analyze_btn:
             features = result["features"]
             crack_type = classification["primary_type"]
             confidence = classification["primary_confidence"]
+
+            # No user confirmation is requested. High-confidence predictions are
+            # collected privately for a future offline retraining run.
+            queued_for_retraining = (
+                save_high_confidence_candidate(temp_path, classification)
+                if classification.get("model_version") else False
+            )
 
             kb = CRACK_KNOWLEDGE_BASE.get(crack_type, {})
             if not kb:
@@ -1017,6 +1038,11 @@ if uploaded_file is not None and analyze_btn:
 
             with col1:
                 st.subheader("📊 Analysis Results")
+
+                if classification.get("model_version"):
+                    st.caption(f"Classified by local trained model ({classification['model_version']}).")
+                elif queued_for_retraining:
+                    st.caption("This high-confidence upload was queued privately for future model improvement.")
 
                 # Severity banner
                 if kb.get("is_structural", False):
@@ -1127,8 +1153,7 @@ if uploaded_file is not None and analyze_btn:
                 report_lines.append("")
                 report_lines.append("REPAIR METHODS:")
                 for m in kb.get('repair_methods', []):
-                    report_lines.append(f"
-  {m['name']}")
+                    report_lines.append(f"\n  {m['name']}")
                     report_lines.append(f"  DIY: {'Yes' if m['diy_possible'] else 'No'} | Cost: {m['diy_cost']} | Pro: {m['professional_cost']}")
                     report_lines.append(f"  Time: {m['time_estimate']} | Effectiveness: {m['effectiveness']}")
                 report_lines.append("")
