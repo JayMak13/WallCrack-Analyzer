@@ -61,8 +61,8 @@ pip install -r requirements.txt
 # Run the app
 streamlit run app.py
 
-# Or run the CLI version
-python wall_crack_analyzer.py --interactive
+# The supported interface is the Streamlit application above.
+# wall_crack_analyzer.py is a legacy prototype and is not used for deployment.
 ```
 
 ## Local image-learning model
@@ -83,8 +83,19 @@ the app automatically saves only very high-confidence model predictions to
 `data/candidate_uploads`; users are not asked to confirm results. Candidates
 are held for a later batch training run and are never added to the active model
 immediately. A model is used by the app only after it reaches the built-in
-held-out validation threshold; otherwise the existing geometric analyser stays
+held-out validation threshold of 75%; otherwise the existing geometric analyser stays
 active as the safe fallback.
+
+For a transparent report of held-out accuracy and recall for every crack type:
+
+```bash
+python evaluate_model.py
+```
+
+For physical crack-width measurement, download the calibration marker in the
+app, print it at the selected side length, and place it flat beside the crack.
+Without that in-photo reference, the app intentionally does not claim a width
+in millimetres.
 
 ## Data Sources
 

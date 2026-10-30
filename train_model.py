@@ -45,13 +45,13 @@ def find_samples(include_candidates: bool):
     samples = []
     root = PROJECT_DIR / "Sample_Images"
     for folder, label in FOLDER_TO_CLASS.items():
-        for path in (root / folder).rglob("*"):
+        for path in sorted((root / folder).rglob("*")):
             if path.suffix.lower() in IMAGE_EXTENSIONS:
                 samples.append((path, CLASS_NAMES.index(label)))
     if include_candidates:
         candidate_root = PROJECT_DIR / "data" / "candidate_uploads"
         for label in CLASS_NAMES:
-            for path in (candidate_root / label).glob("*") if (candidate_root / label).exists() else []:
+            for path in sorted((candidate_root / label).glob("*")) if (candidate_root / label).exists() else []:
                 if path.suffix.lower() in IMAGE_EXTENSIONS:
                     samples.append((path, CLASS_NAMES.index(label)))
     return samples
@@ -76,6 +76,7 @@ def main():
     parser.add_argument("--epochs", type=int, default=12)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--include-candidates", action="store_true")
+    parser.add_argument("--resume", action="store_true", help="Continue from models/crack_classifier.pt")
     args = parser.parse_args()
     torch.manual_seed(42)
     samples = find_samples(args.include_candidates)
@@ -103,6 +104,13 @@ def main():
         print(f"Could not fetch pretrained weights ({error}); training without them.")
         model = models.mobilenet_v3_small(weights=None)
     model.classifier[3] = nn.Linear(model.classifier[3].in_features, len(CLASS_NAMES))
+    resumed_accuracy = -1.0
+    if args.resume and MODEL_PATH.exists():
+        checkpoint = torch.load(MODEL_PATH, map_location="cpu", weights_only=False)
+        if checkpoint.get("class_names") == CLASS_NAMES:
+            model.load_state_dict(checkpoint["model_state_dict"])
+            resumed_accuracy = float(checkpoint.get("validation_accuracy", -1.0))
+            print(f"Resuming model {checkpoint.get('model_version', 'unknown')}")
     # Transfer learning: the pretrained feature extractor already understands
     # visual texture and edges; this small dataset trains only the new head.
     for parameter in model.features.parameters():
@@ -110,8 +118,18 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
     optimizer = torch.optim.AdamW(model.classifier.parameters(), lr=1e-3, weight_decay=1e-4)
-    criterion = nn.CrossEntropyLoss()
-    best_accuracy, best_state = -1.0, None
+    # Hairline images outnumber every other class roughly 3:1.  Balanced loss
+    # prevents the model from learning to answer "hairline" too often simply
+    # because it is the commonest label.
+    train_counts = Counter(label for _, label in train_samples)
+    class_weights = torch.tensor(
+        [len(train_samples) / max(train_counts[index], 1) for index in range(len(CLASS_NAMES))],
+        dtype=torch.float32,
+        device=device,
+    )
+    criterion = nn.CrossEntropyLoss(weight=class_weights)
+    best_accuracy = resumed_accuracy
+    best_state = {key: value.cpu() for key, value in model.state_dict().items()}
     for epoch in range(args.epochs):
         model.train()
         for images, labels in train_loader:
@@ -129,6 +147,15 @@ def main():
         print(f"Epoch {epoch + 1}/{args.epochs}: validation accuracy {accuracy:.1%}")
         if accuracy > best_accuracy:
             best_accuracy, best_state = accuracy, {key: value.cpu() for key, value in model.state_dict().items()}
+        # Persist after every epoch so an interrupted local or hosted job keeps
+        # its best completed state. The app independently enforces its quality
+        # gate before it can use this checkpoint.
+        MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+        torch.save({
+            "model_state_dict": best_state, "class_names": CLASS_NAMES,
+            "validation_accuracy": best_accuracy, "training_images": len(samples),
+            "model_version": datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
+        }, MODEL_PATH)
     MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
     torch.save({
         "model_state_dict": best_state, "class_names": CLASS_NAMES,

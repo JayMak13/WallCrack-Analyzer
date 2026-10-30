@@ -23,6 +23,7 @@ except ImportError:
 
 PROJECT_DIR = Path(__file__).resolve().parent
 MODEL_PATH = PROJECT_DIR / "models" / "crack_classifier.pt"
+MIN_DEPLOYMENT_VALIDATION_ACCURACY = 0.75
 CLASS_NAMES = [
     "diagonal",
     "hairline_shrinkage",
@@ -61,7 +62,7 @@ def predict_image(image_path: str | Path, model_path: Path = MODEL_PATH) -> Opti
         checkpoint = torch.load(model_path, map_location="cpu", weights_only=False)
         # Never put an unproven training run in front of the established rules.
         # The trainer records held-out validation accuracy in every checkpoint.
-        if checkpoint.get("validation_accuracy", 0.0) < 0.65:
+        if checkpoint.get("validation_accuracy", 0.0) < MIN_DEPLOYMENT_VALIDATION_ACCURACY:
             return None
         class_names = checkpoint.get("class_names", CLASS_NAMES)
         model = build_model(len(class_names))

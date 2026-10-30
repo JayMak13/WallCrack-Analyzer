@@ -9,6 +9,7 @@ from dataclasses import dataclass, asdict
 from typing import List, Dict
 from enum import Enum
 
+from calibration import create_marker_png, detect_scale
 from crack_ml import predict_image, save_high_confidence_candidate
 
 # Try to import PIL
@@ -800,11 +801,12 @@ class ImageAnalyzer:
         total = width * height
         labeled = self._simple_label_numpy(crack_mask)
         num_components = labeled.max()
-        bbox_width = bbox_height = aspect_ratio = est_width = 0
+        bbox_width = bbox_height = aspect_ratio = est_width = largest_pixels = 0
         if num_components > 0:
             counts = np.bincount(labeled.flat)[1:]
             if len(counts) > 0:
                 largest = np.argmax(counts) + 1
+                largest_pixels = int(counts[largest - 1])
                 coords = np.argwhere(labeled == largest)
                 if len(coords) > 0:
                     y_min, x_min = coords.min(axis=0)
@@ -813,7 +815,10 @@ class ImageAnalyzer:
                     bbox_height = y_max - y_min
                     aspect_ratio = bbox_height / max(bbox_width, 1)
                     crack_length = max(bbox_width, bbox_height)
-                    est_width = crack_pixels / max(crack_length, 1)
+                    # Use only the largest component.  Dividing every dark edge
+                    # in the image by one crack's length greatly exaggerates the
+                    # apparent thickness of a crack.
+                    est_width = largest_pixels / max(crack_length, 1)
         dom = lines[0]["orientation"] if lines else "unknown"
         conf = lines[0]["percentage"] if lines else 0
         return {
@@ -822,6 +827,8 @@ class ImageAnalyzer:
             "bbox_width": int(bbox_width), "bbox_height": int(bbox_height),
             "aspect_ratio": round(aspect_ratio, 2),
             "estimated_width_pixels": round(est_width, 2),
+            "largest_component_pixels": largest_pixels,
+            "largest_component_ratio": round(largest_pixels / total * 100, 4),
             "dominant_orientation": dom,
             "orientation_confidence": round(conf, 1),
             "stair_step_score": round(self._detect_stair_step_numpy(crack_mask, width, height), 2),
@@ -835,6 +842,7 @@ class ImageAnalyzer:
             "crack_ratio": round(cp/(width*height)*100, 2),
             "num_components": 1, "bbox_width": width//3, "bbox_height": height//2,
             "aspect_ratio": 1.5, "estimated_width_pixels": 5.0,
+            "largest_component_pixels": cp, "largest_component_ratio": round(cp/(width*height)*100, 4),
             "dominant_orientation": lines[0]["orientation"] if lines else "unknown",
             "orientation_confidence": 50.0, "stair_step_score": 0.1,
             "crazing_score": 0.1, "total_crack_pixels": cp
@@ -890,30 +898,38 @@ class ImageAnalyzer:
         crazy = features.get("crazing_score", 0)
         est_px = features.get("estimated_width_pixels", 0)
         ratio = features.get("crack_ratio", 0)
-        mm_per_px = 3000 / max(img_width, 1)
-        est_mm = est_px * mm_per_px
+        # Pixels are not millimetres.  Relative thickness is resolution-neutral
+        # enough to distinguish a visibly broad line from a hairline, but never
+        # becomes a physical width claim.
+        relative_width = est_px / max(min(img_width, img_height), 1)
+        appears_wide = relative_width >= 0.012
+        appears_medium = relative_width >= 0.004
         scores = {}
         if orientation == "horizontal" and aspect < 0.3:
             scores = {"horizontal":0.85, "hairline_shrinkage":0.10, "map_crazing":0.05}
         elif stair > 0.3:
             scores = {"stair_step":0.80, "diagonal":0.15, "vertical_settlement_major":0.05}
-        elif crazy > 0.3 or (ratio > 5 and est_mm < 1):
+        # Map/crazing must be a diffuse, non-directional pattern.  A long,
+        # dominant vertical line can produce many edge components, but it is
+        # never safe to call that cosmetic crazing.
+        elif (crazy > 0.3 and orientation not in {"vertical", "diagonal"}
+              and aspect < 1.8) or (ratio > 5 and not appears_medium and aspect < 1.8):
             scores = {"map_crazing":0.75, "hairline_shrinkage":0.20, "thermal_movement":0.05}
         elif orientation == "diagonal" and aspect > 0.5:
             scores = {"diagonal":0.70, "stair_step":0.20, "vertical_settlement_major":0.10}
         elif orientation == "vertical" and aspect > 1.5:
-            if est_mm < 1.5:
+            if not appears_medium:
                 scores = {"hairline_shrinkage":0.60, "vertical_settlement_minor":0.30, "thermal_movement":0.10}
-            elif est_mm < 6:
+            elif not appears_wide:
                 scores = {"vertical_settlement_minor":0.60, "thermal_movement":0.25, "hairline_shrinkage":0.10, "vertical_settlement_major":0.05}
             else:
                 scores = {"vertical_settlement_major":0.70, "vertical_settlement_minor":0.20, "stair_step":0.10}
-        elif orientation == "vertical" and 0.8 < aspect < 3 and est_mm < 3:
+        elif orientation == "vertical" and 0.8 < aspect < 3 and not appears_medium:
             scores = {"thermal_movement":0.50, "vertical_settlement_minor":0.30, "hairline_shrinkage":0.20}
         else:
-            if est_mm < 1:
+            if not appears_medium:
                 scores = {"hairline_shrinkage":0.40, "map_crazing":0.30, "vertical_settlement_minor":0.30}
-            elif est_mm < 6:
+            elif not appears_wide:
                 scores = {"vertical_settlement_minor":0.40, "thermal_movement":0.30, "diagonal":0.30}
             else:
                 scores = {"vertical_settlement_major":0.35, "diagonal":0.35, "stair_step":0.30}
@@ -922,8 +938,12 @@ class ImageAnalyzer:
             "primary_type": sorted_types[0][0],
             "primary_confidence": round(sorted_types[0][1], 2),
             "all_scores": {k:round(v,2) for k,v in sorted_types},
-            "estimated_width_mm": round(est_mm, 2),
-            "reasoning": f"Detected {orientation} crack with estimated width {est_mm:.1f}mm"
+            "estimated_width_mm": None,
+            "relative_width": round(relative_width, 4),
+            "reasoning": (
+                f"Detected a {orientation} crack. The apparent line thickness is used only "
+                "for classification; a physical millimetre width needs a scale reference in the photo."
+            )
         }
 
 
@@ -981,6 +1001,18 @@ with col1:
         "Plaster / Drywall (interior)": "plaster_drywall"
     }
 
+    st.caption("For an actual millimetre width, print the calibration marker at its stated size and place it flat beside the crack.")
+    marker_side_mm = st.number_input("Printed marker side (mm)", min_value=10.0, max_value=200.0, value=50.0, step=1.0)
+    marker_png = create_marker_png()
+    if marker_png:
+        st.download_button(
+            "Download calibration marker",
+            data=marker_png,
+            file_name="wall-crack-scale-marker.png",
+            mime="image/png",
+            help="Print this square at exactly the selected side length. Keep it in the same wall plane as the crack."
+        )
+
     analyze_btn = st.button("🔍 Analyze Crack", type="primary", use_container_width=True)
 
 # Analysis
@@ -999,11 +1031,17 @@ if uploaded_file is not None and analyze_btn:
         # The trained local image model is preferred whenever it is available.
         # Geometric features remain useful for display and for the safe fallback.
         ml_classification = predict_image(temp_path)
+        rule_classification = result.get("classification", {})
+        high_risk_rule_types = {"vertical_settlement_major", "stair_step"}
         # A young model with low confidence must not displace the established
         # geometric analyser.  It becomes primary only when it is decisive.
         if (ml_classification and ml_classification["primary_confidence"] >= 0.60
+                and not (
+                    rule_classification.get("primary_type") in high_risk_rule_types
+                    and rule_classification.get("primary_confidence", 0) >= 0.65
+                )
                 and result.get("success", False)):
-            ml_classification["estimated_width_mm"] = result["classification"].get("estimated_width_mm", 0)
+            ml_classification["estimated_width_mm"] = None
             result["classification"] = ml_classification
 
         if not result.get("success", False):
@@ -1011,6 +1049,13 @@ if uploaded_file is not None and analyze_btn:
         else:
             classification = result["classification"]
             features = result["features"]
+            calibration = detect_scale(temp_path, marker_side_mm)
+            calibrated_width_mm = (
+                features.get("estimated_width_pixels", 0) * calibration.mm_per_pixel
+                if calibration.available else None
+            )
+            classification["calibrated_width_mm"] = calibrated_width_mm
+            classification["calibration_message"] = calibration.message
             crack_type = classification["primary_type"]
             confidence = classification["primary_confidence"]
 
@@ -1057,9 +1102,14 @@ if uploaded_file is not None and analyze_btn:
                 with m2:
                     st.metric("Severity", f"{sev_color} {severity.value}")
                 with m3:
-                    st.metric("Est. Width", f"{classification.get('estimated_width_mm', 0):.1f} mm")
+                    width_value = f"{calibrated_width_mm:.1f} mm" if calibrated_width_mm is not None else "Scale needed"
+                    st.metric("Apparent Crack Width", width_value)
                 with m4:
-                    st.metric("Confidence", f"{confidence*100:.0f}%")
+                    st.metric("Analysis Confidence", f"{confidence*100:.0f}%")
+
+                st.caption(calibration.message)
+                if calibrated_width_mm is not None:
+                    st.caption("Measurement is approximate: the marker must be printed at the selected size and lie in the same plane as the crack.")
 
                 st.markdown("---")
 
@@ -1116,7 +1166,7 @@ if uploaded_file is not None and analyze_btn:
                             st.markdown(f"**DIY Cost:** {method['diy_cost']}")
                         with c2:
                             st.markdown(f"**Professional Cost:** {method['professional_cost']}")
-                            st.markdown(f"**Time:** {method['time_estimate']}")
+                            st.markdown(f"**Time:** {method.get('time_estimate', method.get('time', 'Not specified'))}")
 
                         st.markdown(f"**Effectiveness:** {method['effectiveness']}")
                         st.markdown(f"**Materials:** {', '.join(method['materials'])}")
@@ -1140,7 +1190,11 @@ if uploaded_file is not None and analyze_btn:
                 report_lines.append(f"CRACK TYPE: {kb.get('name', crack_type)}")
                 report_lines.append(f"SEVERITY: {severity.value}")
                 report_lines.append(f"STRUCTURAL: {'YES' if kb.get('is_structural') else 'No'}")
-                report_lines.append(f"EST. WIDTH: {classification.get('estimated_width_mm', 0):.1f} mm")
+                report_lines.append(
+                    f"APPARENT CRACK WIDTH: {calibrated_width_mm:.1f} mm (marker-calibrated)"
+                    if calibrated_width_mm is not None
+                    else "CRACK WIDTH: Requires an in-photo calibration marker for a reliable millimetre measurement"
+                )
                 report_lines.append(f"URGENCY: {kb.get('urgency', 'Monitor')}")
                 report_lines.append("")
                 report_lines.append("CAUSES:")
@@ -1155,7 +1209,7 @@ if uploaded_file is not None and analyze_btn:
                 for m in kb.get('repair_methods', []):
                     report_lines.append(f"\n  {m['name']}")
                     report_lines.append(f"  DIY: {'Yes' if m['diy_possible'] else 'No'} | Cost: {m['diy_cost']} | Pro: {m['professional_cost']}")
-                    report_lines.append(f"  Time: {m['time_estimate']} | Effectiveness: {m['effectiveness']}")
+                    report_lines.append(f"  Time: {m.get('time_estimate', m.get('time', 'Not specified'))} | Effectiveness: {m['effectiveness']}")
                 report_lines.append("")
                 report_lines.append(f"MONITORING: {kb.get('monitoring', '')}")
                 report_lines.append(f"COST RANGE: {kb.get('cost_range', 'Unknown')}")
@@ -1179,7 +1233,8 @@ if uploaded_file is not None and analyze_btn:
                     "crack_name": kb.get("name", crack_type),
                     "severity": severity.value,
                     "is_structural": kb.get("is_structural", False),
-                    "estimated_width_mm": classification.get("estimated_width_mm", 0),
+                    "estimated_width_mm": calibrated_width_mm,
+                    "width_estimate_note": calibration.message,
                     "confidence": confidence,
                     "urgency": kb.get("urgency", ""),
                     "causes": kb.get("causes", []),
