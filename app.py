@@ -994,24 +994,15 @@ col1, col2 = st.columns([1, 1])
 
 with col1:
     st.subheader("📷 Add Crack Image")
-    upload_tab, camera_tab = st.tabs(["Upload file", "Use camera"])
-    with upload_tab:
-        uploaded_file = st.file_uploader(
-            "Choose a crack image",
-            type=["jpg", "jpeg", "png", "webp"],
-            help="Choose an existing photo from your device."
-        )
-    with camera_tab:
-        camera_file = st.camera_input(
-            "Take a clear photo of the crack",
-            help="Keep the camera square to the wall and include the calibration marker when measuring width."
-        )
-
-    # Streamlit camera_input returns the same UploadedFile-style object as the
-    # file picker, so captured and selected images use exactly one safe path.
-    image_file = camera_file or uploaded_file
-    if camera_file is not None and uploaded_file is not None:
-        st.info("Using the camera photo. Remove it or take another photo to use the selected file instead.")
+    # This native file chooser asks the device for an image only after the user
+    # clicks it. On phones, the browser/device normally offers Camera or Gallery;
+    # on desktops it opens the normal file picker. No camera stream is requested
+    # or kept open by the app.
+    image_file = st.file_uploader(
+        "Upload / Capture Image",
+        type=["jpg", "jpeg", "png", "webp"],
+        help="Tap to choose a photo. Your phone may offer Camera or Gallery. Keep the camera square to the wall."
+    )
 
     wall_material = st.selectbox(
         "Wall Material",
