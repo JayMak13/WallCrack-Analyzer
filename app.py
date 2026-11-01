@@ -19,6 +19,14 @@ try:
 except ImportError:
     PIL_AVAILABLE = False
 
+# iPhone and some Android camera applications return HEIC/HEIF photos.  Pillow
+# needs this optional plugin before it can open and convert those captures.
+try:
+    import pillow_heif
+    pillow_heif.register_heif_opener()
+except ImportError:
+    pass
+
 try:
     import numpy as np
     NUMPY_AVAILABLE = True
@@ -1000,9 +1008,21 @@ with col1:
     # or kept open by the app.
     image_file = st.file_uploader(
         "Upload / Capture Image",
-        type=["jpg", "jpeg", "png", "webp"],
+        type=["jpg", "jpeg", "png", "webp", "heic", "heif"],
+        key="crack_image_input",
         help="Tap to choose a photo. Your phone may offer Camera or Gallery. Keep the camera square to the wall."
     )
+    if image_file is not None:
+        try:
+            image_file.seek(0)
+            image_preview = Image.open(image_file)
+            st.success(f"Image ready: {image_file.name}")
+            st.image(image_preview, caption="Image queued for analysis", use_container_width=True)
+            # Image.open advances the uploaded stream; rewind it before the
+            # shared analysis pipeline reads and saves the file.
+            image_file.seek(0)
+        except Exception:
+            st.error("The captured image could not be opened. Please try another photo in JPG or PNG format.")
 
     wall_material = st.selectbox(
         "Wall Material",
