@@ -940,6 +940,14 @@ class ImageAnalyzer:
             "all_scores": {k:round(v,2) for k,v in sorted_types},
             "estimated_width_mm": None,
             "relative_width": round(relative_width, 4),
+            # This is a safety flag, not a structural diagnosis. A long,
+            # visibly broad vertical/diagonal feature without a physical scale
+            # is too uncertain to be advertised as a DIY-only situation.
+            "requires_professional_review": bool(
+                orientation in {"vertical", "diagonal"}
+                and aspect >= 2.5
+                and relative_width >= 0.006
+            ),
             "reasoning": (
                 f"Detected a {orientation} crack. The apparent line thickness is used only "
                 "for classification; a physical millimetre width needs a scale reference in the photo."
@@ -985,8 +993,25 @@ st.sidebar.markdown("""
 col1, col2 = st.columns([1, 1])
 
 with col1:
-    st.subheader("📤 Upload Image")
-    uploaded_file = st.file_uploader("Choose a crack image", type=["jpg", "jpeg", "png", "webp"])
+    st.subheader("📷 Add Crack Image")
+    upload_tab, camera_tab = st.tabs(["Upload file", "Use camera"])
+    with upload_tab:
+        uploaded_file = st.file_uploader(
+            "Choose a crack image",
+            type=["jpg", "jpeg", "png", "webp"],
+            help="Choose an existing photo from your device."
+        )
+    with camera_tab:
+        camera_file = st.camera_input(
+            "Take a clear photo of the crack",
+            help="Keep the camera square to the wall and include the calibration marker when measuring width."
+        )
+
+    # Streamlit camera_input returns the same UploadedFile-style object as the
+    # file picker, so captured and selected images use exactly one safe path.
+    image_file = camera_file or uploaded_file
+    if camera_file is not None and uploaded_file is not None:
+        st.info("Using the camera photo. Remove it or take another photo to use the selected file instead.")
 
     wall_material = st.selectbox(
         "Wall Material",
@@ -1016,10 +1041,10 @@ with col1:
     analyze_btn = st.button("🔍 Analyze Crack", type="primary", use_container_width=True)
 
 # Analysis
-if uploaded_file is not None and analyze_btn:
+if image_file is not None and analyze_btn:
     with st.spinner("Analyzing crack image... This may take a few seconds."):
         # Save uploaded file to an OS-safe temporary location.
-        img = Image.open(uploaded_file)
+        img = Image.open(image_file)
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
             temp_path = temp_file.name
         img.convert("RGB").save(temp_path, "PNG")
@@ -1069,6 +1094,10 @@ if uploaded_file is not None and analyze_btn:
             kb = CRACK_KNOWLEDGE_BASE.get(crack_type, {})
             if not kb:
                 kb = CRACK_KNOWLEDGE_BASE["hairline_shrinkage"]
+            requires_professional_review = (
+                kb.get("professional_needed", False)
+                or classification.get("requires_professional_review", False)
+            )
 
             # Severity color
             severity = kb.get("severity", SeverityLevel.LOW)
@@ -1092,6 +1121,8 @@ if uploaded_file is not None and analyze_btn:
                 # Severity banner
                 if kb.get("is_structural", False):
                     st.error("⚠️ STRUCTURAL CRACK DETECTED - Professional Help Required")
+                elif requires_professional_review:
+                    st.warning("⚠️ INCONCLUSIVE CRACK PATTERN - Professional assessment recommended before any repair")
                 else:
                     st.success("✅ Non-Structural Crack - DIY Repair Possible")
 
@@ -1135,7 +1166,7 @@ if uploaded_file is not None and analyze_btn:
                 st.subheader("💰 Estimated Cost")
                 st.markdown(f"**Range:** {kb.get('cost_range', 'Unknown')}")
 
-                if kb.get("professional_needed", False):
+                if requires_professional_review:
                     st.error("🚨 This crack requires professional structural evaluation. Do not attempt DIY repair.")
                 else:
                     st.success("✅ DIY repair is feasible. Follow the repair methods below.")
@@ -1189,7 +1220,11 @@ if uploaded_file is not None and analyze_btn:
                 report_lines.append("")
                 report_lines.append(f"CRACK TYPE: {kb.get('name', crack_type)}")
                 report_lines.append(f"SEVERITY: {severity.value}")
-                report_lines.append(f"STRUCTURAL: {'YES' if kb.get('is_structural') else 'No'}")
+                report_lines.append(
+                    "STRUCTURAL: PROFESSIONAL REVIEW RECOMMENDED"
+                    if requires_professional_review
+                    else f"STRUCTURAL: {'YES' if kb.get('is_structural') else 'No'}"
+                )
                 report_lines.append(
                     f"APPARENT CRACK WIDTH: {calibrated_width_mm:.1f} mm (marker-calibrated)"
                     if calibrated_width_mm is not None
@@ -1233,6 +1268,7 @@ if uploaded_file is not None and analyze_btn:
                     "crack_name": kb.get("name", crack_type),
                     "severity": severity.value,
                     "is_structural": kb.get("is_structural", False),
+                    "professional_review_recommended": requires_professional_review,
                     "estimated_width_mm": calibrated_width_mm,
                     "width_estimate_note": calibration.message,
                     "confidence": confidence,
@@ -1241,7 +1277,7 @@ if uploaded_file is not None and analyze_btn:
                     "symptoms": kb.get("symptoms", []),
                     "repair_methods": kb.get("repair_methods", []),
                     "cost_range": kb.get("cost_range", ""),
-                    "professional_needed": kb.get("professional_needed", False),
+                    "professional_needed": requires_professional_review,
                     "monitoring": kb.get("monitoring", ""),
                     "image_features": features,
                     "timestamp": datetime.now().isoformat()
@@ -1254,8 +1290,8 @@ if uploaded_file is not None and analyze_btn:
                     mime="application/json"
                 )
 
-elif uploaded_file is None and analyze_btn:
-    st.warning("Please upload an image first.")
+elif image_file is None and analyze_btn:
+    st.warning("Please upload an image or take a camera photo first.")
 
 # Reference guide at bottom
 st.markdown("---")
